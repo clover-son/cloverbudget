@@ -189,11 +189,12 @@ async function loadMonth(year, month) {
   isLoading = true; renderDashboard();
   try {
     const [snapGastos, snapRendas] = await Promise.all([
-      getDocs(query(collection(db,'gastos'), where('ano','==',year), where('mes','==',month), orderBy('data','desc'))),
-      getDocs(query(collection(db,'rendas'), where('ano','==',year), where('mes','==',month), orderBy('data','desc')))
+      getDocs(query(collection(db,'gastos'), where('ano','==',year), where('mes','==',month))),
+      getDocs(query(collection(db,'rendas'), where('ano','==',year), where('mes','==',month)))
     ]);
-    allTransactions = snapGastos.docs.map(d => ({id:d.id,...d.data()}));
-    allRendas = snapRendas.docs.map(d => ({id:d.id,...d.data()}));
+    const toDate = t => t.data?.toDate ? t.data.toDate() : new Date(t.data);
+    allTransactions = snapGastos.docs.map(d => ({id:d.id,...d.data()})).sort((a,b) => toDate(b) - toDate(a));
+    allRendas = snapRendas.docs.map(d => ({id:d.id,...d.data()})).sort((a,b) => toDate(b) - toDate(a));
   } catch(e) { console.error(e); showToast('Erro ao carregar','error'); allTransactions = []; allRendas = []; }
   isLoading = false;
   renderDashboard(); renderCategories(); renderTransactions();
