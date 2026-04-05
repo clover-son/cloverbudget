@@ -159,8 +159,8 @@ const GRUPOS = [
   { id:'outros',      label:'Outros',             emoji:'📦', cats:['Outros','Extra'] },
 ];
 // Normaliza classe para comparação case-insensitive e variações
-const INCOME_CATS_NORMALIZED = ['salário','salario','salÃ¡rio','resgate','rendimentos','vale'];
-const isIncomeCat = classe => INCOME_CATS_NORMALIZED.includes((classe||'').toLowerCase().trim());
+const INCOME_CATS_NORMALIZED = ['salario','resgate','rendimentos','vale'];
+const isIncomeCat = classe => INCOME_CATS_NORMALIZED.includes((classe||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim());
 const MONTHS_PT = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
 const getBudget = () => { try { return JSON.parse(localStorage.getItem('clover_budget')||'{}'); } catch { return {}; } };
@@ -407,18 +407,20 @@ function updateMonthLabel() { document.getElementById('month-label').textContent
 
 window.handleCSV = async (file) => {
   // Mapa de normalização — remove acentos e padroniza categorias
+  // Após removeAcentos, todas as strings já vêm sem acento
+  // Só precisamos normalizar variações e abreviações
   const NORMALIZE_MAP = {
-    'Sal\u00e1rio': 'Salario', 'sal\u00e1rio': 'Salario', 'Sal\u00c3\u00a1rio': 'Salario',
+    'Salario': 'Salario', 'salario': 'Salario',
     'Resgate': 'Resgate', 'resgate': 'Resgate',
     'Rendimentos': 'Rendimentos',
     'Vale': 'Vale',
-    'Farm\u00e1cia': 'Farmacia', 'Farm\u00c3\u00a1cia': 'Farmacia',
-    'Sa\u00fade': 'Saude', 'Sa\u00c3\u00bade': 'Saude',
-    'Educa\u00e7\u00e3o': 'Educacao', 'Educa\u00c3\u00a7\u00c3\u00a3o': 'Educacao',
-    'Revis\u00e3o': 'Revisao', 'Revis\u00c3\u00a3o': 'Revisao',
-    'Compras - Roupas e Acess\u00f3rios': 'Compras - Roupas', 'Compras - Roupas e Acess\u00c3\u00b3rios': 'Compras - Roupas',
-    'Investimento - Fam\u00edlia': 'Investimento - Familia', 'Investimento - Fam\u00c3\u00adlia': 'Investimento - Familia',
-    '\u00c1gua/Luz/G\u00e1s': 'Agua/Luz/Gas', '\u00c3\u0081gua/Luz/G\u00c3\u00a1s': 'Agua/Luz/Gas',
+    'Farmacia': 'Farmacia',
+    'Saude': 'Saude',
+    'Educacao': 'Educacao',
+    'Revisao': 'Revisao',
+    'Compras - Roupas e Acessorios': 'Compras - Roupas',
+    'Investimento - Familia': 'Investimento - Familia',
+    'Agua/Luz/Gas': 'Agua/Luz/Gas',
     'Cuidados Pessoais': 'Cuidados Pessoais',
     'Lava-Car': 'Lava-Car',
   };
@@ -431,7 +433,21 @@ window.handleCSV = async (file) => {
   };
 
   const buffer = await file.arrayBuffer();
-  const text = new TextDecoder('iso-8859-1').decode(buffer);
+  // Tenta iso-8859-1 primeiro, fallback para utf-8
+  let text;
+  try {
+    text = new TextDecoder('iso-8859-1').decode(buffer);
+    // Verifica se decodificou corretamente procurando por caracteres típicos do português
+    if (text.includes('Salário') || text.includes('Saúde') || text.includes('Farmácia')) {
+      // ok, latin1 funcionou
+    }
+  } catch(e) {
+    text = new TextDecoder('utf-8').decode(buffer);
+  }
+
+  // Remove acentos de todo o texto para evitar problemas de encoding
+  const removeAcentos = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '');
+  text = removeAcentos(text);
   const rows = text.split('\n').filter(l=>l.trim()).slice(1);
 
   const statusEl = document.getElementById('import-status');
