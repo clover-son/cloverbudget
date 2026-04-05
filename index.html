@@ -520,14 +520,23 @@ async function loadAndRenderCompare() {
       return `<span class="cc-delta ${cls}">${arrow} ${sign}${d.toFixed(1)}%</span>`;
     };
 
+    const budget = getBudget();
+
     // Build category cards
     const catCards = GRUPOS.map(g => {
       const a = avgA[g.id] || 0;
       const b = avgB[g.id] || 0;
       if (a === 0 && b === 0) return '';
-      const delta = a > 0 ? ((b - a) / a * 100) : 0;
-      const isOver = b > a;
-      const barPct = a > 0 ? Math.min((b / a) * 100, 150) : 100;
+
+      // Referência: budget configurado ou média do ano anterior
+      const budgetCat = parseFloat(budget[g.id] || 0);
+      const ref = budgetCat > 0 ? budgetCat : a;
+      const refLabel = budgetCat > 0 ? 'budget mensal' : `méd ${yearA}`;
+
+      const delta = ref > 0 ? ((b - ref) / ref * 100) : 0;
+      const isOver = b > ref;
+      const barPct = ref > 0 ? Math.min((b / ref) * 100, 100) : 100;
+
       return `
         <div class="compare-cat-card">
           <div class="ccc-header">
@@ -537,21 +546,20 @@ async function loadAndRenderCompare() {
           </div>
           <div class="ccc-values">
             <div class="ccc-col">
-              <div class="ccc-year-label">${yearA} méd/mês</div>
-              <div class="ccc-value">${fmt(a)}</div>
+              <div class="ccc-year-label">Referência (${refLabel})</div>
+              <div class="ccc-value">${fmt(ref)}</div>
             </div>
-            <div class="ccc-arrow">${isOver ? '→' : '→'}</div>
+            <div class="ccc-arrow">→</div>
             <div class="ccc-col">
               <div class="ccc-year-label">${yearB} YTD méd/mês</div>
               <div class="ccc-value" style="color:${isOver?'var(--red)':'var(--green)'}">${fmt(b)}</div>
             </div>
           </div>
           <div class="ccc-bar-bg">
-            <div class="ccc-bar-ref"></div>
-            <div class="ccc-bar-fill ${isOver?'over':'ok'}" style="width:${Math.min(barPct,100)}%"></div>
+            <div class="ccc-bar-fill ${isOver?'over':'ok'}" style="width:${barPct.toFixed(1)}%"></div>
           </div>
           <div class="ccc-bar-labels">
-            <span>R$0</span><span style="position:absolute;left:${Math.min((a/(a*1.5))*100,100)}%;transform:translateX(-50%);color:var(--gray)">méd ${yearA}</span><span>${fmt(a*1.5)}</span>
+            <span>0%</span><span>100% do ${refLabel}</span>
           </div>
         </div>`;
     }).filter(Boolean).join('');
