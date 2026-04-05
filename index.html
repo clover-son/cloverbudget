@@ -184,18 +184,23 @@ const normalize = s => (s||'').toLowerCase().trim();
 const getCatGroup = classe => GRUPOS.find(g => g.cats.some(c => normalize(c) === normalize(classe)));
 
 let allRendas = [];
+let loadToken = 0; // token para cancelar loads antigos
 
 async function loadMonth(year, month) {
+  const myToken = ++loadToken; // incrementa token a cada chamada
   isLoading = true; renderDashboard();
   try {
     const [snapGastos, snapRendas] = await Promise.all([
       getDocs(query(collection(db,'gastos'), where('ano','==',year), where('mes','==',month))),
       getDocs(query(collection(db,'rendas'), where('ano','==',year), where('mes','==',month)))
     ]);
+    // Se chegou uma query mais nova, ignora essa
+    if (myToken !== loadToken) return;
     const toDate = t => t.data?.toDate ? t.data.toDate() : new Date(t.data);
     allTransactions = snapGastos.docs.map(d => ({id:d.id,...d.data()})).sort((a,b) => toDate(b) - toDate(a));
     allRendas = snapRendas.docs.map(d => ({id:d.id,...d.data()})).sort((a,b) => toDate(b) - toDate(a));
   } catch(e) { console.error(e); showToast('Erro ao carregar','error'); allTransactions = []; allRendas = []; }
+  if (myToken !== loadToken) return;
   isLoading = false;
   renderDashboard(); renderCategories(); renderTransactions();
 }
@@ -671,3 +676,4 @@ document.addEventListener('DOMContentLoaded', () => {
 </nav>
 </body>
 </html>
+
