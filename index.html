@@ -207,6 +207,8 @@ function renderDashboard() {
   const gastos = allTransactions;
   const totalRenda = rendas.reduce((s,t) => s+getVR(t.valor,t.parcelas), 0);
   const totalGasto = gastos.reduce((s,t) => s+getVR(t.valor,t.parcelas), 0);
+  console.log('DEBUG gastos count:', gastos.length, 'totalGasto:', totalGasto);
+  console.log('DEBUG sample:', gastos.slice(0,3).map(t => ({classe:t.classe, valor:t.valor, parcelas:t.parcelas, vr:getVR(t.valor,t.parcelas)})));
   const saldo = totalRenda - totalGasto;
 
   const today = new Date();
