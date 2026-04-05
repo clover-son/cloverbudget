@@ -211,10 +211,10 @@ function renderDashboard() {
 
   const rendas = allRendas;
   const gastos = allTransactions;
-  const totalRenda = rendas.reduce((s,t) => s+getVR(t.valor,t.parcelas), 0);
-  const totalGasto = gastos.reduce((s,t) => s+getVR(t.valor,t.parcelas), 0);
+  const totalRenda = rendas.reduce((s,t) => s+(t.valorReal || t.valor), 0);
+  const totalGasto = gastos.reduce((s,t) => s+(t.valorReal || t.valor), 0);
   console.log('DEBUG gastos count:', gastos.length, 'totalGasto:', totalGasto);
-  console.log('DEBUG sample:', gastos.slice(0,3).map(t => ({classe:t.classe, valor:t.valor, parcelas:t.parcelas, vr:getVR(t.valor,t.parcelas)})));
+  console.log('DEBUG sample:', gastos.slice(0,3).map(t => ({classe:t.classe, valor:t.valor, parcelas:t.parcelas, vr:(t.valorReal || t.valor)})));
   const saldo = totalRenda - totalGasto;
 
   const today = new Date();
@@ -292,7 +292,7 @@ function renderCategories() {
     const g = getCatGroup(t.classe);
     const gid = g?g.id:'outros';
     if (!byGroup[gid]) byGroup[gid]={total:0,count:0};
-    byGroup[gid].total += getVR(t.valor,t.parcelas);
+    byGroup[gid].total += (t.valorReal || t.valor);
     byGroup[gid].count++;
   });
   const sorted = GRUPOS.filter(g=>byGroup[g.id]).sort((a,b)=>(byGroup[b.id]?.total||0)-(byGroup[a.id]?.total||0));
@@ -327,7 +327,7 @@ function renderTransactions(filter='') {
   if (filter) { const f=filter.toLowerCase(); list=list.filter(t=>(t.classe||'').toLowerCase().includes(f)||(t.obs||'').toLowerCase().includes(f)||(t.formaPagamento||'').toLowerCase().includes(f)); }
   if (!list.length) { el.innerHTML='<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-text">Nenhum lançamento</div></div>'; return; }
   el.innerHTML = list.map(t => {
-    const vr = getVR(t.valor,t.parcelas);
+    const vr = (t.valorReal || t.valor);
     const isIncome = isIncomeCat(t.classe);
     const g = getCatGroup(t.classe);
     const dt = t.data?.toDate?t.data.toDate():new Date(t.data);
@@ -369,7 +369,7 @@ async function loadAndRenderYear() {
     const snap = await getDocs(query(collection(db,'gastos'), where('ano','==',currentYear)));
     const docs = snap.docs.map(d=>d.data());
     const byMonth = {};
-    docs.forEach(t => { byMonth[t.mes]=(byMonth[t.mes]||0)+getVR(t.valor,t.parcelas); });
+    docs.forEach(t => { byMonth[t.mes]=(byMonth[t.mes]||0)+(t.valorReal || t.valor); });
     const yearTotal = Object.values(byMonth).reduce((s,v)=>s+v,0);
     const maxMonth = Math.max(...Object.values(byMonth),1);
     const budget = getBudget();
@@ -483,7 +483,8 @@ window.handleCSV = async (file) => {
       const obs = cols[4].trim();
       const mes = dt.getMonth() + 1;
       const ano = dt.getFullYear();
-      const baseDoc = { data: Timestamp.fromDate(dt), classe, formaPagamento, conta, obs, valor: Number(valor), parcelas: Number(parcelas), mes: Number(mes), ano: Number(ano), criadoEm: Timestamp.now() };
+      const valorReal = Number((valor / parcelas).toFixed(2));
+      const baseDoc = { data: Timestamp.fromDate(dt), classe, formaPagamento, conta, obs, valor: Number(valor), parcelas: Number(parcelas), valorReal, mes: Number(mes), ano: Number(ano), criadoEm: Timestamp.now() };
 
       if (INCOME_CLASSES.includes(classe)) {
         rendaDocs.push(baseDoc);
@@ -531,11 +532,13 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.disabled=true; btn.textContent='Salvando...';
     try {
       const dt=new Date(document.getElementById('f-data').value);
+      const fValor = parseFloat(document.getElementById('f-valor').value);
+      const fParcelas = parseInt(document.getElementById('f-parcelas').value)||1;
+      const fValorReal = Number((fValor / fParcelas).toFixed(2));
       await addDoc(collection(db,'gastos'),{
         data:Timestamp.fromDate(dt), classe:document.getElementById('f-classe').value,
         formaPagamento:document.getElementById('f-forma').value, conta:document.getElementById('f-conta').value,
-        obs:document.getElementById('f-obs').value, valor:parseFloat(document.getElementById('f-valor').value),
-        parcelas:parseInt(document.getElementById('f-parcelas').value)||1,
+        obs:document.getElementById('f-obs').value, valor:fValor, parcelas:fParcelas, valorReal:fValorReal,
         mes:dt.getMonth()+1, ano:dt.getFullYear(), criadoEm:Timestamp.now()
       });
       showToast('Salvo!','success');
