@@ -110,6 +110,21 @@ body { font-family: 'DM Sans', sans-serif; background: var(--cream); color: var(
 .ym-bar-fill { height: 100%; background: var(--green-light); border-radius: 99px; }
 .ym-bar-fill.over { background: var(--red); }
 /* COMPARE */
+.compare-cat-card { background: white; border-radius: var(--radius-sm); padding: 14px; margin-bottom: 10px; box-shadow: var(--shadow); }
+.ccc-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.ccc-emoji { font-size: 18px; }
+.ccc-label { font-size: 14px; font-weight: 600; flex: 1; }
+.ccc-values { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.ccc-col { flex: 1; }
+.ccc-col:last-child { text-align: right; }
+.ccc-year-label { font-size: 10px; color: var(--gray); font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+.ccc-value { font-family: "DM Mono", monospace; font-size: 15px; font-weight: 500; }
+.ccc-arrow { font-size: 18px; color: var(--gray-light); flex-shrink: 0; padding: 0 8px; }
+.ccc-bar-bg { height: 6px; background: var(--gray-light); border-radius: 99px; overflow: hidden; position: relative; }
+.ccc-bar-fill { height: 100%; border-radius: 99px; transition: width 0.5s ease; }
+.ccc-bar-fill.ok { background: var(--green); }
+.ccc-bar-fill.over { background: var(--red); }
+.ccc-bar-labels { display: flex; justify-content: space-between; font-size: 9px; color: var(--gray); margin-top: 3px; position: relative; }
 .compare-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
 .compare-card { background: white; border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
 .compare-card.full { grid-column: 1/-1; }
@@ -437,127 +452,160 @@ async function loadAndRenderCompare() {
       getDocs(query(collection(db,'rendas'), where('ano','==',yearB))),
     ]);
 
-    // Aggregate by month
-    const gastosByMonth = (docs) => {
-      const m = {};
-      docs.forEach(d => { const t = d.data(); m[t.mes] = (m[t.mes]||0) + (t.valorReal || t.valor); });
-      return m;
+    // Aggregate by group
+    const sumByGroup = (docs) => {
+      const byMonth = {}; // {mes: {groupId: total}}
+      docs.forEach(d => {
+        const t = d.data();
+        const g = getCatGroup(t.classe);
+        const gid = g ? g.id : 'outros';
+        if (!byMonth[t.mes]) byMonth[t.mes] = {};
+        byMonth[t.mes][gid] = (byMonth[t.mes][gid] || 0) + (t.valorReal || t.valor);
+      });
+      // avg per group across all months
+      const allGroups = {};
+      const months = Object.keys(byMonth).map(Number);
+      months.forEach(m => {
+        Object.entries(byMonth[m]).forEach(([gid, val]) => {
+          if (!allGroups[gid]) allGroups[gid] = [];
+          allGroups[gid].push(val);
+        });
+      });
+      // avg = total / 12 (full year) or / monthsB (YTD)
+      return { byMonth, allGroups, months };
     };
-    const rendasByMonth = (docs) => {
-      const m = {};
-      docs.forEach(d => { const t = d.data(); m[t.mes] = (m[t.mes]||0) + (t.valorReal || t.valor); });
-      return m;
-    };
 
-    const gA = gastosByMonth(snapA_g.docs);
-    const gB = gastosByMonth(snapB_g.docs);
-    const rA = rendasByMonth(snapA_r.docs);
-    const rB = rendasByMonth(snapB_r.docs);
+    const dataA = sumByGroup(snapA_g.docs);
+    const dataB = sumByGroup(snapB_g.docs);
 
-    // YTD: months available in each year
-    const monthsA = Object.keys(gA).map(Number).filter(m => m >= 1 && m <= 12);
-    const monthsB = Object.keys(gB).map(Number).filter(m => m >= 1 && m <= 12);
-    const ytdMonthsA = monthsA.filter(m => m <= currentMonthNow);
-    const ytdMonthsB = monthsB.filter(m => m <= currentMonthNow);
+    // Avg per group: yearA = total / 12, yearB = total / monthsB so far
+    const monthsB = dataB.months.filter(m => m <= currentMonthNow);
+    const nMonthsB = Math.max(monthsB.length, 1);
 
-    const avgGastoA = monthsA.length > 0 ? Object.values(gA).reduce((s,v)=>s+v,0) / 12 : 0;
-    const avgGastoB = ytdMonthsB.length > 0 ? ytdMonthsB.reduce((s,m)=>s+(gB[m]||0),0) / ytdMonthsB.length : 0;
-    const avgRendaA = monthsA.length > 0 ? Object.values(rA).reduce((s,v)=>s+v,0) / 12 : 0;
-    const avgRendaB = ytdMonthsB.length > 0 ? ytdMonthsB.reduce((s,m)=>s+(rB[m]||0),0) / ytdMonthsB.length : 0;
+    const avgA = {}; // avg monthly per group in yearA
+    const avgB = {}; // avg monthly per group in yearB YTD
+    const totalA = {}; // total yearA per group
+    const totalB = {}; // total yearB YTD per group
 
-    const deltaGasto = avgGastoA > 0 ? ((avgGastoB - avgGastoA) / avgGastoA * 100) : 0;
+    GRUPOS.forEach(g => {
+      const valsA = dataA.allGroups[g.id] || [];
+      const valsB = (dataB.allGroups[g.id] || []);
+      totalA[g.id] = valsA.reduce((s,v)=>s+v,0);
+      totalB[g.id] = valsB.reduce((s,v)=>s+v,0);
+      avgA[g.id] = totalA[g.id] / 12;
+      avgB[g.id] = totalB[g.id] / nMonthsB;
+    });
+
+    // Renda totals
+    const rendaA = snapA_r.docs.reduce((s,d)=>s+(d.data().valorReal||d.data().valor),0);
+    const rendaB = snapB_r.docs.reduce((s,d)=>s+(d.data().valorReal||d.data().valor),0);
+    const avgRendaA = rendaA / 12;
+    const avgRendaB = rendaB / nMonthsB;
     const deltaRenda = avgRendaA > 0 ? ((avgRendaB - avgRendaA) / avgRendaA * 100) : 0;
 
-    const fmtDelta = (d, isGasto) => {
+    // Total gastos
+    const totalGastoA = Object.values(totalA).reduce((s,v)=>s+v,0);
+    const totalGastoB = Object.values(totalB).reduce((s,v)=>s+v,0);
+    const avgTotalA = totalGastoA / 12;
+    const avgTotalB = totalGastoB / nMonthsB;
+    const deltaTotalGasto = avgTotalA > 0 ? ((avgTotalB - avgTotalA) / avgTotalA * 100) : 0;
+
+    const fmtDelta = (d, isGasto=true) => {
+      if (isNaN(d) || !isFinite(d)) return '';
       const sign = d >= 0 ? '+' : '';
+      // for gastos: up = bad (red), down = good (green)
+      // for renda: up = good (green), down = bad (red)
       const cls = d === 0 ? 'neutral' : (isGasto ? (d > 0 ? 'up' : 'down') : (d > 0 ? 'down' : 'up'));
-      return `<span class="cc-delta ${cls}">${sign}${d.toFixed(1)}% vs ${yearA}</span>`;
+      const arrow = d > 0 ? '↑' : d < 0 ? '↓' : '→';
+      return `<span class="cc-delta ${cls}">${arrow} ${sign}${d.toFixed(1)}%</span>`;
     };
 
-    // Build month table
-    const allMonths = [...new Set([...Object.keys(gA), ...Object.keys(gB)].map(Number))].sort((a,b)=>a-b);
-    const tableRows = allMonths.map(m => {
-      const vA = gA[m] || 0;
-      const vB = gB[m] || 0;
-      const diff = vB - vA;
-      const isCurrent = m === currentMonthNow && yearB === today.getFullYear();
-      const diffClass = diff > 0 ? 'up' : diff < 0 ? 'down' : '';
-      const sign = diff >= 0 ? '+' : '';
-      return `<div class="ct-row ${isCurrent?'current':''}">
-        <span class="ct-mes">${MONTHS_PT[m-1].substring(0,3)}</span>
-        <span class="ct-val">${vA > 0 ? fmt(vA) : '—'}</span>
-        <span class="ct-val">${vB > 0 ? fmt(vB) : '—'}</span>
-        <span class="ct-diff ${diffClass}">${vA > 0 && vB > 0 ? sign+fmt(diff).replace('R$ ','') : '—'}</span>
-      </div>`;
-    }).join('');
-
-    const rendasRows = allMonths.map(m => {
-      const vA = rA[m] || 0;
-      const vB = rB[m] || 0;
-      const diff = vB - vA;
-      const isCurrent = m === currentMonthNow && yearB === today.getFullYear();
-      const diffClass = diff > 0 ? 'down' : diff < 0 ? 'up' : '';
-      const sign = diff >= 0 ? '+' : '';
-      return `<div class="ct-row ${isCurrent?'current':''}">
-        <span class="ct-mes">${MONTHS_PT[m-1].substring(0,3)}</span>
-        <span class="ct-val">${vA > 0 ? fmt(vA) : '—'}</span>
-        <span class="ct-val">${vB > 0 ? fmt(vB) : '—'}</span>
-        <span class="ct-diff ${diffClass}">${vA > 0 && vB > 0 ? sign+fmt(diff).replace('R$ ','') : '—'}</span>
-      </div>`;
-    }).join('');
+    // Build category cards
+    const catCards = GRUPOS.map(g => {
+      const a = avgA[g.id] || 0;
+      const b = avgB[g.id] || 0;
+      if (a === 0 && b === 0) return '';
+      const delta = a > 0 ? ((b - a) / a * 100) : 0;
+      const isOver = b > a;
+      const barPct = a > 0 ? Math.min((b / a) * 100, 150) : 100;
+      return `
+        <div class="compare-cat-card">
+          <div class="ccc-header">
+            <span class="ccc-emoji">${g.emoji}</span>
+            <span class="ccc-label">${g.label}</span>
+            ${fmtDelta(delta, true)}
+          </div>
+          <div class="ccc-values">
+            <div class="ccc-col">
+              <div class="ccc-year-label">${yearA} méd/mês</div>
+              <div class="ccc-value">${fmt(a)}</div>
+            </div>
+            <div class="ccc-arrow">${isOver ? '→' : '→'}</div>
+            <div class="ccc-col">
+              <div class="ccc-year-label">${yearB} YTD méd/mês</div>
+              <div class="ccc-value" style="color:${isOver?'var(--red)':'var(--green)'}">${fmt(b)}</div>
+            </div>
+          </div>
+          <div class="ccc-bar-bg">
+            <div class="ccc-bar-ref"></div>
+            <div class="ccc-bar-fill ${isOver?'over':'ok'}" style="width:${Math.min(barPct,100)}%"></div>
+          </div>
+          <div class="ccc-bar-labels">
+            <span>R$0</span><span style="position:absolute;left:${Math.min((a/(a*1.5))*100,100)}%;transform:translateX(-50%);color:var(--gray)">méd ${yearA}</span><span>${fmt(a*1.5)}</span>
+          </div>
+        </div>`;
+    }).filter(Boolean).join('');
 
     el.innerHTML = `
-      <div class="compare-section-title">📊 Média Mensal de Gastos</div>
-      <div class="compare-cards">
-        <div class="compare-card">
-          <div class="cc-year" style="color:var(--gray)">${yearA} — ano completo</div>
-          <div class="cc-value">${fmt(avgGastoA)}</div>
-          <div class="cc-sub">média/mês</div>
+      <!-- SUMMARY CARDS -->
+      <div class="compare-cards" style="margin-bottom:4px">
+        <div class="compare-card" style="border-left:4px solid var(--red)">
+          <div class="cc-year" style="color:var(--gray)">💸 Gastos méd/mês</div>
+          <div style="display:flex;justify-content:space-between;align-items:flex-end">
+            <div>
+              <div style="font-size:10px;color:var(--gray);margin-bottom:2px">${yearA}</div>
+              <div class="cc-value" style="font-size:18px">${fmt(avgTotalA)}</div>
+            </div>
+            <div style="font-size:20px;color:var(--gray-light)">→</div>
+            <div style="text-align:right">
+              <div style="font-size:10px;color:var(--green);margin-bottom:2px">${yearB} YTD</div>
+              <div class="cc-value" style="font-size:18px;color:${deltaTotalGasto>0?'var(--red)':'var(--green)'}">${fmt(avgTotalB)}</div>
+            </div>
+          </div>
+          ${fmtDelta(deltaTotalGasto, true)}
         </div>
-        <div class="compare-card" style="border: 2px solid var(--green)">
-          <div class="cc-year" style="color:var(--green)">${yearB} — YTD ${MONTHS_PT[currentMonthNow-1]}</div>
-          <div class="cc-value" style="color:var(--green)">${fmt(avgGastoB)}</div>
-          <div class="cc-sub">média/mês até agora</div>
-          ${fmtDelta(deltaGasto, true)}
-        </div>
-      </div>
-
-      <div class="compare-section-title">💵 Média Mensal de Renda</div>
-      <div class="compare-cards">
-        <div class="compare-card">
-          <div class="cc-year" style="color:var(--gray)">${yearA} — ano completo</div>
-          <div class="cc-value">${fmt(avgRendaA)}</div>
-          <div class="cc-sub">média/mês</div>
-        </div>
-        <div class="compare-card" style="border: 2px solid var(--green)">
-          <div class="cc-year" style="color:var(--green)">${yearB} — YTD ${MONTHS_PT[currentMonthNow-1]}</div>
-          <div class="cc-value" style="color:var(--green)">${fmt(avgRendaB)}</div>
-          <div class="cc-sub">média/mês até agora</div>
+        <div class="compare-card" style="border-left:4px solid var(--green)">
+          <div class="cc-year" style="color:var(--gray)">💵 Renda méd/mês</div>
+          <div style="display:flex;justify-content:space-between;align-items:flex-end">
+            <div>
+              <div style="font-size:10px;color:var(--gray);margin-bottom:2px">${yearA}</div>
+              <div class="cc-value" style="font-size:18px">${fmt(avgRendaA)}</div>
+            </div>
+            <div style="font-size:20px;color:var(--gray-light)">→</div>
+            <div style="text-align:right">
+              <div style="font-size:10px;color:var(--green);margin-bottom:2px">${yearB} YTD</div>
+              <div class="cc-value" style="font-size:18px;color:${deltaRenda>0?'var(--green)':'var(--red)'}">${fmt(avgRendaB)}</div>
+            </div>
+          </div>
           ${fmtDelta(deltaRenda, false)}
         </div>
       </div>
 
-      <div class="compare-section-title">💸 Gastos Mês a Mês</div>
-      <div class="compare-table">
-        <div class="ct-header">
-          <span>Mês</span><span>${yearA}</span><span>${yearB}</span><span>Δ</span>
-        </div>
-        ${tableRows}
+      <div style="font-size:11px;color:var(--gray);padding:4px 0 12px;text-align:center">
+        Comparando média mensal ${yearA} (ano completo) vs média mensal ${yearB} (${nMonthsB} mes${nMonthsB>1?'es':''} até ${MONTHS_PT[currentMonthNow-1]})
       </div>
 
-      <div class="compare-section-title">💵 Renda Mês a Mês</div>
-      <div class="compare-table">
-        <div class="ct-header">
-          <span>Mês</span><span>${yearA}</span><span>${yearB}</span><span>Δ</span>
-        </div>
-        ${rendasRows}
-      </div>
+      <!-- POR CATEGORIA -->
+      <div class="compare-section-title">Por Categoria</div>
+      <div id="compare-cats">${catCards}</div>
     `;
+
   } catch(e) {
     console.error(e);
-    el.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">Erro ao carregar comparativo</div></div>';
+    el.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">Erro ao carregar</div></div>';
   }
 }
+
 
 window.showPage = (page) => {
   currentPage = page;
