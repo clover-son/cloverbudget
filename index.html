@@ -109,6 +109,29 @@ body { font-family: 'DM Sans', sans-serif; background: var(--cream); color: var(
 .ym-bar { height: 3px; background: var(--gray-light); border-radius: 99px; margin-top: 6px; overflow: hidden; }
 .ym-bar-fill { height: 100%; background: var(--green-light); border-radius: 99px; }
 .ym-bar-fill.over { background: var(--red); }
+/* COMPARE */
+.compare-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+.compare-card { background: white; border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
+.compare-card.full { grid-column: 1/-1; }
+.cc-year { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 4px; }
+.cc-value { font-family: "DM Serif Display", serif; font-size: 22px; line-height: 1.1; }
+.cc-sub { font-size: 11px; color: var(--gray); margin-top: 3px; }
+.cc-delta { font-size: 12px; font-weight: 600; margin-top: 6px; padding: 4px 10px; border-radius: 99px; display: inline-block; }
+.cc-delta.up { background: var(--red-light); color: var(--red); }
+.cc-delta.down { background: var(--green-muted); color: var(--green); }
+.cc-delta.neutral { background: var(--gray-light); color: var(--gray); }
+.compare-section-title { font-family: "DM Serif Display", serif; font-size: 18px; color: var(--green); margin: 16px 0 10px; }
+.compare-table { background: white; border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; margin-bottom: 16px; }
+.ct-header { display: grid; grid-template-columns: 80px 1fr 1fr 60px; padding: 10px 14px; background: var(--green); color: white; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; gap: 4px; }
+.ct-row { display: grid; grid-template-columns: 80px 1fr 1fr 60px; padding: 10px 14px; border-bottom: 1px solid var(--gray-light); font-size: 12px; gap: 4px; align-items: center; }
+.ct-row:last-child { border-bottom: none; }
+.ct-row.current { background: var(--green-muted); }
+.ct-mes { font-weight: 600; color: var(--gray); }
+.ct-val { font-family: "DM Mono", monospace; font-size: 11px; }
+.ct-diff { font-family: "DM Mono", monospace; font-size: 11px; font-weight: 600; }
+.ct-diff.up { color: var(--red); }
+.ct-diff.down { color: var(--green); }
+
 .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; background: white; border-top: 1px solid var(--gray-light); display: flex; z-index: 200; box-shadow: 0 -4px 20px rgba(0,0,0,0.08); }
 .nav-btn { flex: 1; padding: 12px 4px 10px; border: none; background: none; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 3px; color: var(--gray); font-family: 'DM Sans', sans-serif; font-size: 10px; font-weight: 500; }
 .nav-btn.active { color: var(--green); }
@@ -147,7 +170,9 @@ const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
 const GRUPOS = [
-  { id:'alimentacao', label:'Alimentação',      emoji:'🍽️', cats:['Mercado','Restaurantes','Bares'] },
+  { id:'mercado',      label:'Mercado',           emoji:'🛒', cats:['Mercado'] },
+  { id:'restaurantes', label:'Restaurantes',      emoji:'🍽️', cats:['Restaurantes'] },
+  { id:'bares',       label:'Bares & Baladas',   emoji:'🍺', cats:['Bares'] },
   { id:'transporte',  label:'Transporte',        emoji:'🚌', cats:['Transporte'] },
   { id:'carro',       label:'Carro',             emoji:'🚗', cats:['Gasolina','IPVA','Seguro','Revisao','Lava-Car'] },
   { id:'saude',       label:'Saúde & Bem-estar', emoji:'💊', cats:['Saude','Farmacia','Academia'] },
@@ -396,12 +421,151 @@ async function loadAndRenderYear() {
 }
 
 window.goToMonth = (m) => { currentMonth=m; updateMonthLabel(); showPage('dashboard'); loadMonth(currentYear,currentMonth); };
+async function loadAndRenderCompare() {
+  const el = document.getElementById('compare-content');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div>Carregando comparativo...</div>';
+  const yearA = currentYear - 1;
+  const yearB = currentYear;
+  const today = new Date();
+  const currentMonthNow = today.getMonth() + 1;
+
+  try {
+    const [snapA_g, snapB_g, snapA_r, snapB_r] = await Promise.all([
+      getDocs(query(collection(db,'gastos'), where('ano','==',yearA))),
+      getDocs(query(collection(db,'gastos'), where('ano','==',yearB))),
+      getDocs(query(collection(db,'rendas'), where('ano','==',yearA))),
+      getDocs(query(collection(db,'rendas'), where('ano','==',yearB))),
+    ]);
+
+    // Aggregate by month
+    const gastosByMonth = (docs) => {
+      const m = {};
+      docs.forEach(d => { const t = d.data(); m[t.mes] = (m[t.mes]||0) + (t.valorReal || t.valor); });
+      return m;
+    };
+    const rendasByMonth = (docs) => {
+      const m = {};
+      docs.forEach(d => { const t = d.data(); m[t.mes] = (m[t.mes]||0) + (t.valorReal || t.valor); });
+      return m;
+    };
+
+    const gA = gastosByMonth(snapA_g.docs);
+    const gB = gastosByMonth(snapB_g.docs);
+    const rA = rendasByMonth(snapA_r.docs);
+    const rB = rendasByMonth(snapB_r.docs);
+
+    // YTD: months available in each year
+    const monthsA = Object.keys(gA).map(Number).filter(m => m >= 1 && m <= 12);
+    const monthsB = Object.keys(gB).map(Number).filter(m => m >= 1 && m <= 12);
+    const ytdMonthsA = monthsA.filter(m => m <= currentMonthNow);
+    const ytdMonthsB = monthsB.filter(m => m <= currentMonthNow);
+
+    const avgGastoA = monthsA.length > 0 ? Object.values(gA).reduce((s,v)=>s+v,0) / 12 : 0;
+    const avgGastoB = ytdMonthsB.length > 0 ? ytdMonthsB.reduce((s,m)=>s+(gB[m]||0),0) / ytdMonthsB.length : 0;
+    const avgRendaA = monthsA.length > 0 ? Object.values(rA).reduce((s,v)=>s+v,0) / 12 : 0;
+    const avgRendaB = ytdMonthsB.length > 0 ? ytdMonthsB.reduce((s,m)=>s+(rB[m]||0),0) / ytdMonthsB.length : 0;
+
+    const deltaGasto = avgGastoA > 0 ? ((avgGastoB - avgGastoA) / avgGastoA * 100) : 0;
+    const deltaRenda = avgRendaA > 0 ? ((avgRendaB - avgRendaA) / avgRendaA * 100) : 0;
+
+    const fmtDelta = (d, isGasto) => {
+      const sign = d >= 0 ? '+' : '';
+      const cls = d === 0 ? 'neutral' : (isGasto ? (d > 0 ? 'up' : 'down') : (d > 0 ? 'down' : 'up'));
+      return `<span class="cc-delta ${cls}">${sign}${d.toFixed(1)}% vs ${yearA}</span>`;
+    };
+
+    // Build month table
+    const allMonths = [...new Set([...Object.keys(gA), ...Object.keys(gB)].map(Number))].sort((a,b)=>a-b);
+    const tableRows = allMonths.map(m => {
+      const vA = gA[m] || 0;
+      const vB = gB[m] || 0;
+      const diff = vB - vA;
+      const isCurrent = m === currentMonthNow && yearB === today.getFullYear();
+      const diffClass = diff > 0 ? 'up' : diff < 0 ? 'down' : '';
+      const sign = diff >= 0 ? '+' : '';
+      return `<div class="ct-row ${isCurrent?'current':''}">
+        <span class="ct-mes">${MONTHS_PT[m-1].substring(0,3)}</span>
+        <span class="ct-val">${vA > 0 ? fmt(vA) : '—'}</span>
+        <span class="ct-val">${vB > 0 ? fmt(vB) : '—'}</span>
+        <span class="ct-diff ${diffClass}">${vA > 0 && vB > 0 ? sign+fmt(diff).replace('R$ ','') : '—'}</span>
+      </div>`;
+    }).join('');
+
+    const rendasRows = allMonths.map(m => {
+      const vA = rA[m] || 0;
+      const vB = rB[m] || 0;
+      const diff = vB - vA;
+      const isCurrent = m === currentMonthNow && yearB === today.getFullYear();
+      const diffClass = diff > 0 ? 'down' : diff < 0 ? 'up' : '';
+      const sign = diff >= 0 ? '+' : '';
+      return `<div class="ct-row ${isCurrent?'current':''}">
+        <span class="ct-mes">${MONTHS_PT[m-1].substring(0,3)}</span>
+        <span class="ct-val">${vA > 0 ? fmt(vA) : '—'}</span>
+        <span class="ct-val">${vB > 0 ? fmt(vB) : '—'}</span>
+        <span class="ct-diff ${diffClass}">${vA > 0 && vB > 0 ? sign+fmt(diff).replace('R$ ','') : '—'}</span>
+      </div>`;
+    }).join('');
+
+    el.innerHTML = `
+      <div class="compare-section-title">📊 Média Mensal de Gastos</div>
+      <div class="compare-cards">
+        <div class="compare-card">
+          <div class="cc-year" style="color:var(--gray)">${yearA} — ano completo</div>
+          <div class="cc-value">${fmt(avgGastoA)}</div>
+          <div class="cc-sub">média/mês</div>
+        </div>
+        <div class="compare-card" style="border: 2px solid var(--green)">
+          <div class="cc-year" style="color:var(--green)">${yearB} — YTD ${MONTHS_PT[currentMonthNow-1]}</div>
+          <div class="cc-value" style="color:var(--green)">${fmt(avgGastoB)}</div>
+          <div class="cc-sub">média/mês até agora</div>
+          ${fmtDelta(deltaGasto, true)}
+        </div>
+      </div>
+
+      <div class="compare-section-title">💵 Média Mensal de Renda</div>
+      <div class="compare-cards">
+        <div class="compare-card">
+          <div class="cc-year" style="color:var(--gray)">${yearA} — ano completo</div>
+          <div class="cc-value">${fmt(avgRendaA)}</div>
+          <div class="cc-sub">média/mês</div>
+        </div>
+        <div class="compare-card" style="border: 2px solid var(--green)">
+          <div class="cc-year" style="color:var(--green)">${yearB} — YTD ${MONTHS_PT[currentMonthNow-1]}</div>
+          <div class="cc-value" style="color:var(--green)">${fmt(avgRendaB)}</div>
+          <div class="cc-sub">média/mês até agora</div>
+          ${fmtDelta(deltaRenda, false)}
+        </div>
+      </div>
+
+      <div class="compare-section-title">💸 Gastos Mês a Mês</div>
+      <div class="compare-table">
+        <div class="ct-header">
+          <span>Mês</span><span>${yearA}</span><span>${yearB}</span><span>Δ</span>
+        </div>
+        ${tableRows}
+      </div>
+
+      <div class="compare-section-title">💵 Renda Mês a Mês</div>
+      <div class="compare-table">
+        <div class="ct-header">
+          <span>Mês</span><span>${yearA}</span><span>${yearB}</span><span>Δ</span>
+        </div>
+        ${rendasRows}
+      </div>
+    `;
+  } catch(e) {
+    console.error(e);
+    el.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">Erro ao carregar comparativo</div></div>';
+  }
+}
+
 window.showPage = (page) => {
   currentPage = page;
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active',b.dataset.page===page));
   document.querySelectorAll('.page').forEach(p=>p.style.display=p.id==='page-'+page?'block':'none');
   if (page==='year') loadAndRenderYear();
   if (page==='budget') renderBudgetConfig();
+  if (page==='compare') loadAndRenderCompare();
 };
 window.showTab = (tab) => {
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===tab));
@@ -593,7 +757,9 @@ document.addEventListener('DOMContentLoaded', () => {
         <label>Categoria</label>
         <select id="f-classe" required>
           <option value="">Selecione...</option>
-          <optgroup label="🍽️ Alimentação"><option>Mercado</option><option>Restaurantes</option><option>Bares</option></optgroup>
+          <optgroup label="🛒 Mercado"><option>Mercado</option></optgroup>
+          <optgroup label="🍽️ Restaurantes"><option>Restaurantes</option></optgroup>
+          <optgroup label="🍺 Bares"><option>Bares</option></optgroup>
           <optgroup label="🚌 Transporte"><option>Transporte</option></optgroup>
           <optgroup label="🚗 Carro"><option>Gasolina</option><option>IPVA</option><option>Seguro</option><option>Revisão</option><option>Lava-Car</option></optgroup>
           <optgroup label="💊 Saúde & Bem-estar"><option>Saúde</option><option>Farmácia</option><option>Academia</option></optgroup>
@@ -644,6 +810,9 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="form-title" style="font-size:17px;margin-bottom:10px">Por Grupo</div>
     <div class="info-box">Opcional — defina limites por grupo para ver alertas individuais.</div>
     <div class="budget-config-item"><span class="bci-emoji">🍽️</span><span class="bci-label">Alimentação</span><input type="number" id="bci-alimentacao" class="bci-input" placeholder="R$ —" step="50"/></div>
+    <div class="budget-config-item"><span class="bci-emoji">🛒</span><span class="bci-label">Mercado</span><input type="number" id="bci-mercado" class="bci-input" placeholder="R$ —" step="50"/></div>
+    <div class="budget-config-item"><span class="bci-emoji">🍽️</span><span class="bci-label">Restaurantes</span><input type="number" id="bci-restaurantes" class="bci-input" placeholder="R$ —" step="50"/></div>
+    <div class="budget-config-item"><span class="bci-emoji">🍺</span><span class="bci-label">Bares & Baladas</span><input type="number" id="bci-bares" class="bci-input" placeholder="R$ —" step="50"/></div>
     <div class="budget-config-item"><span class="bci-emoji">🚌</span><span class="bci-label">Transporte</span><input type="number" id="bci-transporte" class="bci-input" placeholder="R$ —" step="50"/></div>
     <div class="budget-config-item"><span class="bci-emoji">🚗</span><span class="bci-label">Carro</span><input type="number" id="bci-carro" class="bci-input" placeholder="R$ —" step="50"/></div>
     <div class="budget-config-item"><span class="bci-emoji">💊</span><span class="bci-label">Saúde & Bem-estar</span><input type="number" id="bci-saude" class="bci-input" placeholder="R$ —" step="50"/></div>
@@ -670,13 +839,20 @@ document.addEventListener('DOMContentLoaded', () => {
   </div>
 </div>
 
+<!-- COMPARE PAGE -->
+<div id="page-compare" class="page" style="display:none;padding:16px">
+  <div id="compare-content"><div class="loading"><div class="spinner"></div>Carregando...</div></div>
+</div>
+
 <!-- NAV -->
 <nav class="bottom-nav">
   <button class="nav-btn active" data-page="dashboard" onclick="showPage('dashboard')"><span class="nav-icon">📊</span>Dashboard</button>
   <button class="nav-btn" data-page="add" onclick="showPage('add')"><span class="nav-icon">➕</span>Adicionar</button>
   <button class="nav-btn" data-page="year" onclick="showPage('year')"><span class="nav-icon">📅</span>Ano</button>
   <button class="nav-btn" data-page="budget" onclick="showPage('budget')"><span class="nav-icon">🎯</span>Budget</button>
+  <button class="nav-btn" data-page="compare" onclick="showPage('compare')"><span class="nav-icon">📈</span>Comparar</button>
 </nav>
 </body>
 </html>
+
 
