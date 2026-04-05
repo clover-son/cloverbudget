@@ -148,16 +148,19 @@ const db = getFirestore(app);
 
 const GRUPOS = [
   { id:'alimentacao', label:'Alimentação',      emoji:'🍽️', cats:['Mercado','Restaurantes','Bares'] },
-  { id:'carro',       label:'Carro',             emoji:'🚗', cats:['Gasolina','IPVA','Seguro','Revisão','Lava-Car'] },
-  { id:'saude',       label:'Saúde & Bem-estar', emoji:'💊', cats:['Saúde','Farmácia','Academia'] },
-  { id:'moradia',     label:'Moradia',            emoji:'🏠', cats:['Aluguel','Água/Luz/Gás'] },
+  { id:'transporte',  label:'Transporte',        emoji:'🚌', cats:['Transporte'] },
+  { id:'carro',       label:'Carro',             emoji:'🚗', cats:['Gasolina','IPVA','Seguro','Revisao','Lava-Car'] },
+  { id:'saude',       label:'Saúde & Bem-estar', emoji:'💊', cats:['Saude','Farmacia','Academia'] },
+  { id:'moradia',     label:'Moradia',            emoji:'🏠', cats:['Aluguel','Agua/Luz/Gas'] },
   { id:'lazer',       label:'Lazer & Viagens',   emoji:'✈️', cats:['Lazer','Viagens'] },
-  { id:'compras',     label:'Compras',            emoji:'🛍️', cats:['Compras','Compras - Eletro','Compras - Roupas e Acessórios','Cuidados Pessoais','Presentes'] },
-  { id:'educacao',    label:'Educação',           emoji:'📚', cats:['Educação','Celular'] },
-  { id:'financeiro',  label:'Financeiro',         emoji:'💰', cats:['Juros','Taxas','Investimento','Investimento - Família'] },
+  { id:'compras',     label:'Compras',            emoji:'🛍️', cats:['Compras','Compras - Eletro','Compras - Roupas','Cuidados Pessoais','Presentes'] },
+  { id:'educacao',    label:'Educação',           emoji:'📚', cats:['Educacao','Celular'] },
+  { id:'financeiro',  label:'Financeiro',         emoji:'💰', cats:['Juros','Taxas','Investimento','Investimento - Familia'] },
   { id:'outros',      label:'Outros',             emoji:'📦', cats:['Outros','Extra'] },
 ];
-const INCOME_CATS = ['Salário','Resgate','resgate','Rendimentos','Vale'];
+// Normaliza classe para comparação case-insensitive e variações
+const INCOME_CATS_NORMALIZED = ['salário','salario','salÃ¡rio','resgate','rendimentos','vale'];
+const isIncomeCat = classe => INCOME_CATS_NORMALIZED.includes((classe||'').toLowerCase().trim());
 const MONTHS_PT = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
 const getBudget = () => { try { return JSON.parse(localStorage.getItem('clover_budget')||'{}'); } catch { return {}; } };
@@ -171,21 +174,27 @@ let isLoading = false;
 
 const fmt = v => 'R$ ' + Number(v).toLocaleString('pt-BR', {minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtShort = v => 'R$\u00a0' + Number(v).toLocaleString('pt-BR', {minimumFractionDigits:0,maximumFractionDigits:0});
-const getVR = (v,p) => parseFloat(v) / (parseInt(p)||1);
+const getVR = (v,p) => { const valor = parseFloat(String(v).replace(',','.')); const parc = parseInt(String(p)) || 1; return valor / parc; };
 const showToast = (msg, type='') => {
   const t = document.getElementById('toast');
   t.textContent = msg; t.className = 'toast show '+type;
   setTimeout(() => t.className = 'toast', 2800);
 };
-const getCatGroup = classe => GRUPOS.find(g => g.cats.map(c=>c.toLowerCase()).includes((classe||'').toLowerCase()));
+const normalize = s => (s||'').toLowerCase().trim();
+const getCatGroup = classe => GRUPOS.find(g => g.cats.some(c => normalize(c) === normalize(classe)));
+
+let allRendas = [];
 
 async function loadMonth(year, month) {
   isLoading = true; renderDashboard();
   try {
-    const q = query(collection(db,'gastos'), where('ano','==',year), where('mes','==',month), orderBy('data','desc'));
-    const snap = await getDocs(q);
-    allTransactions = snap.docs.map(d => ({id:d.id,...d.data()}));
-  } catch(e) { console.error(e); showToast('Erro ao carregar','error'); allTransactions = []; }
+    const [snapGastos, snapRendas] = await Promise.all([
+      getDocs(query(collection(db,'gastos'), where('ano','==',year), where('mes','==',month), orderBy('data','desc'))),
+      getDocs(query(collection(db,'rendas'), where('ano','==',year), where('mes','==',month), orderBy('data','desc')))
+    ]);
+    allTransactions = snapGastos.docs.map(d => ({id:d.id,...d.data()}));
+    allRendas = snapRendas.docs.map(d => ({id:d.id,...d.data()}));
+  } catch(e) { console.error(e); showToast('Erro ao carregar','error'); allTransactions = []; allRendas = []; }
   isLoading = false;
   renderDashboard(); renderCategories(); renderTransactions();
 }
@@ -193,36 +202,55 @@ async function loadMonth(year, month) {
 function renderDashboard() {
   const el = document.getElementById('dash-content');
   if (isLoading) { el.innerHTML = '<div class="loading"><div class="spinner"></div>Carregando...</div>'; return; }
-  const gastos = allTransactions.filter(t => !INCOME_CATS.includes(t.classe));
-  const total = gastos.reduce((s,t) => s+getVR(t.valor,t.parcelas), 0);
+
+  const rendas = allRendas;
+  const gastos = allTransactions;
+  const totalRenda = rendas.reduce((s,t) => s+getVR(t.valor,t.parcelas), 0);
+  const totalGasto = gastos.reduce((s,t) => s+getVR(t.valor,t.parcelas), 0);
+  const saldo = totalRenda - totalGasto;
+
   const today = new Date();
   const daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
   const daysPassed = (currentYear===today.getFullYear() && currentMonth===today.getMonth()+1) ? today.getDate() : daysInMonth;
-  const projection = daysPassed > 0 ? (total/daysPassed)*daysInMonth : total;
+  const projection = daysPassed > 0 ? (totalGasto/daysPassed)*daysInMonth : totalGasto;
+
   const budget = getBudget();
   const totalBudget = parseFloat(budget.total||0);
-  const pctReal = totalBudget > 0 ? (total/totalBudget)*100 : 0;
+  const pctReal = totalBudget > 0 ? (totalGasto/totalBudget)*100 : 0;
   const pct = Math.min(pctReal, 100);
-  const remaining = totalBudget - total;
+  const remaining = totalBudget - totalGasto;
   const fillClass = pctReal>=100?'over':pctReal>=80?'warn':'ok';
-  const cardClass = pctReal>=100?'danger':pctReal>=80?'warn':'highlight';
+  const gastosCardClass = pctReal>=100?'danger':pctReal>=80?'warn':'highlight';
 
   el.innerHTML = `
     <div class="summary-section">
-      <div class="summary-card ${cardClass} full">
-        <div class="card-label">Gasto em ${MONTHS_PT[currentMonth-1]}</div>
-        <div class="card-value">${fmt(total)}</div>
-        <div class="card-sub">${gastos.length} lançamentos${totalBudget>0?' · budget: '+fmt(totalBudget):''}</div>
+      <div class="summary-card" style="background:var(--green-muted);border-left:4px solid var(--green)">
+        <div class="card-label" style="color:var(--green)">💵 Renda</div>
+        <div class="card-value" style="color:var(--green)">${fmt(totalRenda)}</div>
+        <div class="card-sub" style="color:var(--green-light)">${rendas.length} lançamento${rendas.length!==1?'s':''}</div>
       </div>
+      <div class="summary-card ${gastosCardClass}">
+        <div class="card-label">💸 Gastos</div>
+        <div class="card-value">${fmt(totalGasto)}</div>
+        <div class="card-sub">${gastos.length} lançamento${gastos.length!==1?'s':''}${totalBudget>0?' · de '+fmt(totalBudget):''}</div>
+      </div>
+      ${totalRenda > 0 ? `
+      <div class="summary-card full" style="background:${saldo>=0?'var(--green-muted)':'var(--red-light)'};border-left:4px solid ${saldo>=0?'var(--green)':'var(--red)'}">
+        <div class="card-label" style="color:${saldo>=0?'var(--green)':'var(--red)'}">\u2696\ufe0f Saldo do M\u00eas</div>
+        <div class="card-value" style="color:${saldo>=0?'var(--green)':'var(--red)'}; font-size:20px">${saldo>=0?'':'\u2212'}${fmt(Math.abs(saldo))}</div>
+        <div class="card-sub" style="color:${saldo>=0?'var(--green-light)':'var(--red)'}">
+          ${saldo>=0?'\u2705 no azul \u2014 sobrou '+fmt(saldo):'\u26a0\ufe0f gastou mais do que recebeu'}
+        </div>
+      </div>` : ''}
       <div class="summary-card">
-        <div class="card-label">Média Diária</div>
-        <div class="card-value" style="font-size:18px">${fmt(daysPassed>0?total/daysPassed:0)}</div>
+        <div class="card-label">\ud83d\udcc8 M\u00e9dia Di\u00e1ria</div>
+        <div class="card-value" style="font-size:18px">${fmt(daysPassed>0?totalGasto/daysPassed:0)}</div>
         <div class="card-sub">${daysPassed} de ${daysInMonth} dias</div>
       </div>
       <div class="summary-card">
-        <div class="card-label">Projeção Mensal</div>
+        <div class="card-label">\ud83d\udd2e Proje\u00e7\u00e3o</div>
         <div class="card-value" style="font-size:18px">${fmt(projection)}</div>
-        <div class="card-sub">${totalBudget>0?(projection>totalBudget?'⚠️ acima do budget':'✅ dentro do budget'):'estimativa'}</div>
+        <div class="card-sub">${totalBudget>0?(projection>totalBudget?'\u26a0\ufe0f acima do budget':'\u2705 dentro do budget'):'estimativa mensal'}</div>
       </div>
     </div>
     ${totalBudget>0?`
@@ -234,20 +262,21 @@ function renderDashboard() {
         </div>
         <div class="budget-bg"><div class="budget-fill ${fillClass}" style="width:${pct}%"></div></div>
         <div class="budget-sub">
-          <span>${fmt(total)} gasto</span>
-          <span style="color:${remaining<0?'var(--red)':'var(--green)'};font-weight:600">${remaining<0?'−':''}${fmt(Math.abs(remaining))} ${remaining<0?'acima':'restante'}</span>
+          <span>${fmt(totalGasto)} gasto</span>
+          <span style="color:${remaining<0?'var(--red)':'var(--green)'};font-weight:600">${remaining<0?'\u2212':''}${fmt(Math.abs(remaining))} ${remaining<0?'acima':'restante'}</span>
         </div>
       </div>
     </div>`:`
     <div style="padding:0 16px 8px">
-      <div class="info-box">💡 Configure seu budget na aba <strong>🎯 Budget</strong> para ver o quanto ainda pode gastar.</div>
+      <div class="info-box">\ud83d\udca1 Configure seu budget na aba <strong>\ud83c\udfaf Budget</strong> para ver o quanto ainda pode gastar.</div>
     </div>`}
   `;
 }
 
+
 function renderCategories() {
   const el = document.getElementById('cat-content');
-  const gastos = allTransactions.filter(t => !INCOME_CATS.includes(t.classe));
+  const gastos = allTransactions.filter(t => !isIncomeCat(t.classe));
   if (!gastos.length) { el.innerHTML = '<div class="empty-state"><div class="empty-icon">📂</div><div class="empty-text">Sem dados neste mês</div></div>'; return; }
   const budget = getBudget();
   const byGroup = {};
@@ -291,7 +320,7 @@ function renderTransactions(filter='') {
   if (!list.length) { el.innerHTML='<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-text">Nenhum lançamento</div></div>'; return; }
   el.innerHTML = list.map(t => {
     const vr = getVR(t.valor,t.parcelas);
-    const isIncome = INCOME_CATS.includes(t.classe);
+    const isIncome = isIncomeCat(t.classe);
     const g = getCatGroup(t.classe);
     const dt = t.data?.toDate?t.data.toDate():new Date(t.data);
     const dateStr = dt.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});
@@ -332,7 +361,7 @@ async function loadAndRenderYear() {
     const snap = await getDocs(query(collection(db,'gastos'), where('ano','==',currentYear)));
     const docs = snap.docs.map(d=>d.data());
     const byMonth = {};
-    docs.filter(t=>!INCOME_CATS.includes(t.classe)).forEach(t => { byMonth[t.mes]=(byMonth[t.mes]||0)+getVR(t.valor,t.parcelas); });
+    docs.forEach(t => { byMonth[t.mes]=(byMonth[t.mes]||0)+getVR(t.valor,t.parcelas); });
     const yearTotal = Object.values(byMonth).reduce((s,v)=>s+v,0);
     const maxMonth = Math.max(...Object.values(byMonth),1);
     const budget = getBudget();
@@ -375,40 +404,99 @@ window.nextMonth = () => { currentMonth++; if(currentMonth>12){currentMonth=1;cu
 function updateMonthLabel() { document.getElementById('month-label').textContent=`${MONTHS_PT[currentMonth-1]} ${currentYear}`; }
 
 window.handleCSV = async (file) => {
-  const text = await file.text();
+  // Mapa de normalização — remove acentos e padroniza categorias
+  const NORMALIZE_MAP = {
+    'Sal\u00e1rio': 'Salario', 'sal\u00e1rio': 'Salario', 'Sal\u00c3\u00a1rio': 'Salario',
+    'Resgate': 'Resgate', 'resgate': 'Resgate',
+    'Rendimentos': 'Rendimentos',
+    'Vale': 'Vale',
+    'Farm\u00e1cia': 'Farmacia', 'Farm\u00c3\u00a1cia': 'Farmacia',
+    'Sa\u00fade': 'Saude', 'Sa\u00c3\u00bade': 'Saude',
+    'Educa\u00e7\u00e3o': 'Educacao', 'Educa\u00c3\u00a7\u00c3\u00a3o': 'Educacao',
+    'Revis\u00e3o': 'Revisao', 'Revis\u00c3\u00a3o': 'Revisao',
+    'Compras - Roupas e Acess\u00f3rios': 'Compras - Roupas', 'Compras - Roupas e Acess\u00c3\u00b3rios': 'Compras - Roupas',
+    'Investimento - Fam\u00edlia': 'Investimento - Familia', 'Investimento - Fam\u00c3\u00adlia': 'Investimento - Familia',
+    '\u00c1gua/Luz/G\u00e1s': 'Agua/Luz/Gas', '\u00c3\u0081gua/Luz/G\u00c3\u00a1s': 'Agua/Luz/Gas',
+    'Cuidados Pessoais': 'Cuidados Pessoais',
+    'Lava-Car': 'Lava-Car',
+  };
+
+  const INCOME_CLASSES = ['Salario','Resgate','Rendimentos','Vale'];
+
+  const normalizeClass = (s) => {
+    const t = (s||'').trim();
+    return NORMALIZE_MAP[t] || t;
+  };
+
+  const buffer = await file.arrayBuffer();
+  const text = new TextDecoder('iso-8859-1').decode(buffer);
   const rows = text.split('\n').filter(l=>l.trim()).slice(1);
+
   const statusEl = document.getElementById('import-status');
   const progressFill = document.getElementById('import-fill');
   document.getElementById('import-progress').style.display='block';
   statusEl.style.display='block';
-  const docs=[]; let errors=0;
+  statusEl.textContent = 'Processando CSV...';
+
+  const gastoDocs = [];
+  const rendaDocs = [];
+  let errors = 0;
+
   rows.forEach(line => {
-    const cols=line.split(';');
-    if(cols.length<7) return;
+    const cols = line.split(';');
+    if (cols.length < 7) return;
     try {
-      const [datePart,timePart]=(cols[0].trim()).split(' ');
-      const [d,m,y]=datePart.split('/');
-      const dt=new Date(`${y}-${m}-${d}T${timePart||'00:00'}:00`);
-      if(isNaN(dt)){errors++;return;}
-      const valor=parseFloat(cols[5].trim().replace(',','.'));
-      if(isNaN(valor)){errors++;return;}
-      let classe=cols[1].trim();
-      if(classe==='resgate') classe='Resgate';
-      docs.push({data:Timestamp.fromDate(dt),classe,formaPagamento:cols[2].trim(),conta:cols[3].trim(),obs:cols[4].trim(),valor,parcelas:parseInt(cols[6].trim())||1,mes:dt.getMonth()+1,ano:dt.getFullYear(),criadoEm:Timestamp.now()});
-    } catch(e){errors++;}
+      const [datePart, timePart] = (cols[0].trim()).split(' ');
+      const [d, m, y] = datePart.split('/');
+      const dt = new Date(`${y}-${m}-${d}T${timePart||'00:00'}:00`);
+      if (isNaN(dt)) { errors++; return; }
+      const valor = parseFloat(cols[5].trim().replace(',','.'));
+      if (isNaN(valor)) { errors++; return; }
+      const parcelas = parseInt(cols[6].trim()) || 1;
+      const classe = normalizeClass(cols[1]);
+      const formaPagamento = cols[2].trim();
+      const conta = cols[3].trim();
+      const obs = cols[4].trim();
+      const mes = dt.getMonth() + 1;
+      const ano = dt.getFullYear();
+      const baseDoc = { data: Timestamp.fromDate(dt), classe, formaPagamento, conta, obs, valor: Number(valor), parcelas: Number(parcelas), mes: Number(mes), ano: Number(ano), criadoEm: Timestamp.now() };
+
+      if (INCOME_CLASSES.includes(classe)) {
+        rendaDocs.push(baseDoc);
+      } else {
+        gastoDocs.push(baseDoc);
+      }
+    } catch(e) { errors++; }
   });
-  let processed=0;
-  for(let i=0;i<docs.length;i+=400){
-    const batch=writeBatch(db);
-    docs.slice(i,i+400).forEach(d=>{const ref=doc(collection(db,'gastos'));batch.set(ref,d);});
+
+  statusEl.textContent = `Encontrados: ${gastoDocs.length} gastos + ${rendaDocs.length} rendas. Importando...`;
+
+  // Write gastos
+  let processed = 0;
+  const total = gastoDocs.length + rendaDocs.length;
+  for (let i = 0; i < gastoDocs.length; i += 400) {
+    const batch = writeBatch(db);
+    gastoDocs.slice(i, i+400).forEach(d => { const ref = doc(collection(db,'gastos')); batch.set(ref, d); });
     await batch.commit();
-    processed+=Math.min(400,docs.length-i);
-    progressFill.style.width=Math.round(processed/docs.length*100)+'%';
-    statusEl.textContent=`Importando... ${processed} de ${docs.length}`;
+    processed += Math.min(400, gastoDocs.length - i);
+    progressFill.style.width = Math.round(processed/total*100) + '%';
+    statusEl.textContent = `Gastos: ${processed}/${gastoDocs.length}...`;
   }
-  statusEl.textContent=`✅ ${processed} importados!${errors>0?' ('+errors+' ignorados)':''}`;
-  showToast(`${processed} importados!`,'success');
-  await loadMonth(currentYear,currentMonth);
+
+  // Write rendas
+  let rendaProcessed = 0;
+  for (let i = 0; i < rendaDocs.length; i += 400) {
+    const batch = writeBatch(db);
+    rendaDocs.slice(i, i+400).forEach(d => { const ref = doc(collection(db,'rendas')); batch.set(ref, d); });
+    await batch.commit();
+    rendaProcessed += Math.min(400, rendaDocs.length - i);
+    progressFill.style.width = Math.round((processed + rendaProcessed)/total*100) + '%';
+    statusEl.textContent = `Rendas: ${rendaProcessed}/${rendaDocs.length}...`;
+  }
+
+  statusEl.textContent = `\u2705 Importado! ${gastoDocs.length} gastos + ${rendaDocs.length} rendas.${errors>0?' ('+errors+' ignorados)':''}`;
+  showToast(`${gastoDocs.length + rendaDocs.length} registros importados!`, 'success');
+  await loadMonth(currentYear, currentMonth);
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -479,6 +567,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <select id="f-classe" required>
           <option value="">Selecione...</option>
           <optgroup label="🍽️ Alimentação"><option>Mercado</option><option>Restaurantes</option><option>Bares</option></optgroup>
+          <optgroup label="🚌 Transporte"><option>Transporte</option></optgroup>
           <optgroup label="🚗 Carro"><option>Gasolina</option><option>IPVA</option><option>Seguro</option><option>Revisão</option><option>Lava-Car</option></optgroup>
           <optgroup label="💊 Saúde & Bem-estar"><option>Saúde</option><option>Farmácia</option><option>Academia</option></optgroup>
           <optgroup label="🏠 Moradia"><option>Aluguel</option><option>Água/Luz/Gás</option></optgroup>
@@ -528,6 +617,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="form-title" style="font-size:17px;margin-bottom:10px">Por Grupo</div>
     <div class="info-box">Opcional — defina limites por grupo para ver alertas individuais.</div>
     <div class="budget-config-item"><span class="bci-emoji">🍽️</span><span class="bci-label">Alimentação</span><input type="number" id="bci-alimentacao" class="bci-input" placeholder="R$ —" step="50"/></div>
+    <div class="budget-config-item"><span class="bci-emoji">🚌</span><span class="bci-label">Transporte</span><input type="number" id="bci-transporte" class="bci-input" placeholder="R$ —" step="50"/></div>
     <div class="budget-config-item"><span class="bci-emoji">🚗</span><span class="bci-label">Carro</span><input type="number" id="bci-carro" class="bci-input" placeholder="R$ —" step="50"/></div>
     <div class="budget-config-item"><span class="bci-emoji">💊</span><span class="bci-label">Saúde & Bem-estar</span><input type="number" id="bci-saude" class="bci-input" placeholder="R$ —" step="50"/></div>
     <div class="budget-config-item"><span class="bci-emoji">🏠</span><span class="bci-label">Moradia</span><input type="number" id="bci-moradia" class="bci-input" placeholder="R$ —" step="50"/></div>
