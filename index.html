@@ -279,8 +279,28 @@ const INCOME_CATS_NORMALIZED = ['salario','resgate','rendimentos','vale','sal\u0
 const isIncomeCat = classe => INCOME_CATS_NORMALIZED.includes((classe||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim());
 const MONTHS_PT = ['Janeiro','Fevereiro','Mar\u00E7o','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
+// Budget: localStorage como cache + Firestore como backup
+const BUDGET_DOC = 'config/budget';
 const getBudget = () => { try { return JSON.parse(localStorage.getItem('clover_budget')||'{}'); } catch { return {}; } };
-const saveBudget = b => localStorage.setItem('clover_budget', JSON.stringify(b));
+const saveBudget = async (b) => {
+  localStorage.setItem('clover_budget', JSON.stringify(b));
+  try {
+    const { setDoc, doc: fsDoc } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
+    await setDoc(fsDoc(db,'config','budget'), b);
+  } catch(e) { console.warn('Budget backup falhou:', e); }
+};
+async function loadBudgetFromFirestore() {
+  try {
+    const { getDoc, doc: fsDoc } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
+    const snap = await getDoc(fsDoc(db,'config','budget'));
+    if (snap.exists()) {
+      const data = snap.data();
+      localStorage.setItem('clover_budget', JSON.stringify(data));
+      return data;
+    }
+  } catch(e) { console.warn('Erro ao carregar budget do Firestore:', e); }
+  return getBudget();
+}
 
 let currentPage = 'dashboard';
 let currentYear = new Date().getFullYear();
@@ -305,14 +325,21 @@ async function loadMonth(year, month) {
   const myToken = ++loadToken;
   isLoading = true; renderDashboard();
   try {
+    // Query por 'ano' apenas, filtra 'mes' no cliente — evita necessidade de índice composto no Firestore
     const [snapGastos, snapRendas] = await Promise.all([
-      getDocs(query(collection(db,'gastos'), where('ano','==',year), where('mes','==',month))),
-      getDocs(query(collection(db,'rendas'), where('ano','==',year), where('mes','==',month)))
+      getDocs(query(collection(db,'gastos'), where('ano','==',year))),
+      getDocs(query(collection(db,'rendas'), where('ano','==',year)))
     ]);
     if (myToken !== loadToken) return;
     const toDate = t => t.data?.toDate ? t.data.toDate() : new Date(t.data);
-    allTransactions = snapGastos.docs.map(d => ({id:d.id,...d.data()})).sort((a,b) => toDate(b) - toDate(a));
-    allRendas = snapRendas.docs.map(d => ({id:d.id,...d.data()})).sort((a,b) => toDate(b) - toDate(a));
+    allTransactions = snapGastos.docs
+      .map(d => ({id:d.id,...d.data()}))
+      .filter(t => t.mes === month)
+      .sort((a,b) => toDate(b) - toDate(a));
+    allRendas = snapRendas.docs
+      .map(d => ({id:d.id,...d.data()}))
+      .filter(t => t.mes === month)
+      .sort((a,b) => toDate(b) - toDate(a));
   } catch(e) { console.error(e); showToast('Erro ao carregar','error'); allTransactions = []; allRendas = []; }
   if (myToken !== loadToken) return;
   isLoading = false;
@@ -421,42 +448,61 @@ function renderDashboard() {
   const remaining = totalBudget - totalGasto;
   const fillClass = pctReal>=100?'over':pctReal>=80?'warn':'ok';
   const gastosCardClass = pctReal>=100?'danger':pctReal>=80?'warn':'highlight';
-  el.innerHTML = '<div class="summary-section">' +
-    '<div class="summary-card" style="background:var(--green-muted);border-left:4px solid var(--green)">' +
-      '<div class="card-label" style="color:var(--green)">\u{1F4B5} Renda</div>' +
-      '<div class="card-value" style="color:var(--green)">' + fmt(totalRenda) + '</div>' +
-      '<div class="card-sub" style="color:var(--green-light)">' + allRendas.length + ' lan\u00E7amento' + (allRendas.length!==1?'s':'') + '</div>' +
+
+  // Parcelas futuras pendentes (calculado antes do innerHTML)
+  const parceladas = allTransactions.filter(t => t.parcelaAtual != null && t.grupoId && t.parcelas > 1);
+  const grupos = {};
+  parceladas.forEach(t => { if (!grupos[t.grupoId]) grupos[t.grupoId] = t; });
+  const pendentes = Object.values(grupos).filter(t => t.parcelaAtual < t.parcelas);
+  const totalFuturo = pendentes.reduce((s,t) => s + (t.parcelas - t.parcelaAtual) * (t.valorReal||t.valor), 0);
+  const parcelasCard = pendentes.length > 0
+    ? '<div class="summary-card full" style="background:var(--cream);border:1.5px solid var(--green-pale)">' +
+        '<div class="card-label" style="color:var(--gray)">\u{1F4C5} Parcelas Futuras</div>' +
+        '<div style="font-family:\'DM Serif Display\',serif;font-size:18px;color:var(--dark)">' + fmt(totalFuturo) + '</div>' +
+        '<div class="card-sub" style="color:var(--gray)">' + pendentes.length + ' compra' + (pendentes.length>1?'s':'') + ' parcelada' + (pendentes.length>1?'s':'') + ' em aberto</div>' +
+      '</div>'
+    : '';
+
+  el.innerHTML =
+    '<div class="summary-section">' +
+      '<div class="summary-card" style="background:var(--green-muted);border-left:4px solid var(--green)">' +
+        '<div class="card-label" style="color:var(--green)">\u{1F4B5} Renda</div>' +
+        '<div class="card-value" style="color:var(--green)">' + fmt(totalRenda) + '</div>' +
+        '<div class="card-sub" style="color:var(--green-light)">' + allRendas.length + ' lan\u00E7amento' + (allRendas.length!==1?'s':'') + '</div>' +
+      '</div>' +
+      '<div class="summary-card ' + gastosCardClass + '">' +
+        '<div class="card-label">\u{1F4B8} Gastos</div>' +
+        '<div class="card-value">' + fmt(totalGasto) + '</div>' +
+        '<div class="card-sub">' + allTransactions.length + ' lan\u00E7amento' + (allTransactions.length!==1?'s':'') + (totalBudget>0?' \u00B7 de '+fmt(totalBudget):'') + '</div>' +
+      '</div>' +
+      (totalRenda > 0
+        ? '<div class="summary-card full" style="background:' + (saldo>=0?'var(--green-muted)':'var(--red-light)') + ';border-left:4px solid ' + (saldo>=0?'var(--green)':'var(--red)') + '">' +
+            '<div class="card-label" style="color:' + (saldo>=0?'var(--green)':'var(--red)') + '">\u2696\uFE0F Saldo do M\u00EAs</div>' +
+            '<div class="card-value" style="color:' + (saldo>=0?'var(--green)':'var(--red)') + ';font-size:20px">' + (saldo>=0?'':'\u2212') + fmt(Math.abs(saldo)) + '</div>' +
+            '<div class="card-sub" style="color:' + (saldo>=0?'var(--green-light)':'var(--red)') + '">' + (saldo>=0?'\u2705 no azul':'\u26A0\uFE0F gastou mais do que recebeu') + '</div>' +
+          '</div>'
+        : '') +
+      '<div class="summary-card">' +
+        '<div class="card-label">\u{1F4C8} M\u00E9dia Di\u00E1ria</div>' +
+        '<div class="card-value" style="font-size:18px">' + fmt(daysPassed>0?totalGasto/daysPassed:0) + '</div>' +
+        '<div class="card-sub">' + daysPassed + ' de ' + daysInMonth + ' dias</div>' +
+      '</div>' +
+      '<div class="summary-card">' +
+        '<div class="card-label">\u{1F52E} Proje\u00E7\u00E3o</div>' +
+        '<div class="card-value" style="font-size:18px">' + fmt(projection) + '</div>' +
+        '<div class="card-sub">' + (totalBudget>0?(projection>totalBudget?'\u26A0\uFE0F acima do budget':'\u2705 dentro do budget'):'estimativa mensal') + '</div>' +
+      '</div>' +
+      parcelasCard +
     '</div>' +
-    '<div class="summary-card ' + gastosCardClass + '">' +
-      '<div class="card-label">\u{1F4B8} Gastos</div>' +
-      '<div class="card-value">' + fmt(totalGasto) + '</div>' +
-      '<div class="card-sub">' + allTransactions.length + ' lan\u00E7amento' + (allTransactions.length!==1?'s':'') + (totalBudget>0?' \u00B7 de '+fmt(totalBudget):'') + '</div>' +
-    '</div>' +
-    (totalRenda > 0 ? '<div class="summary-card full" style="background:' + (saldo>=0?'var(--green-muted)':'var(--red-light)') + ';border-left:4px solid ' + (saldo>=0?'var(--green)':'var(--red)') + '">' +
-      '<div class="card-label" style="color:' + (saldo>=0?'var(--green)':'var(--red)') + '">\u2696\uFE0F Saldo do M\u00EAs</div>' +
-      '<div class="card-value" style="color:' + (saldo>=0?'var(--green)':'var(--red)') + ';font-size:20px">' + (saldo>=0?'':'\u2212') + fmt(Math.abs(saldo)) + '</div>' +
-      '<div class="card-sub" style="color:' + (saldo>=0?'var(--green-light)':'var(--red)') + '">' + (saldo>=0?'\u2705 no azul':'\u26A0\uFE0F gastou mais do que recebeu') + '</div>' +
-    '</div>' : '') +
-    '<div class="summary-card">' +
-      '<div class="card-label">\u{1F4C8} M\u00E9dia Di\u00E1ria</div>' +
-      '<div class="card-value" style="font-size:18px">' + fmt(daysPassed>0?totalGasto/daysPassed:0) + '</div>' +
-      '<div class="card-sub">' + daysPassed + ' de ' + daysInMonth + ' dias</div>' +
-    '</div>' +
-    '<div class="summary-card">' +
-      '<div class="card-label">\u{1F52E} Proje\u00E7\u00E3o</div>' +
-      '<div class="card-value" style="font-size:18px">' + fmt(projection) + '</div>' +
-      '<div class="card-sub">' + (totalBudget>0?(projection>totalBudget?'\u26A0\uFE0F acima do budget':'\u2705 dentro do budget'):'estimativa mensal') + '</div>' +
-    '</div>' +
-  '</div>' +
-  (totalBudget>0 ?
-    '<div class="budget-bar-wrap"><div class="budget-bar-card">' +
-      '<div class="budget-bar-header"><span class="budget-bar-label">Budget Total</span>' +
-      '<span class="budget-bar-pct" style="color:var(--' + (fillClass==='ok'?'green':fillClass==='warn'?'orange':'red') + ')">' + pctReal.toFixed(0) + '%</span></div>' +
-      '<div class="budget-bg"><div class="budget-fill ' + fillClass + '" style="width:' + pct + '%"></div></div>' +
-      '<div class="budget-sub"><span>' + fmt(totalGasto) + ' gasto</span>' +
-      '<span style="color:' + (remaining<0?'var(--red)':'var(--green)') + ';font-weight:600">' + (remaining<0?'\u2212':'') + fmt(Math.abs(remaining)) + ' ' + (remaining<0?'acima':'restante') + '</span></div>' +
-    '</div></div>'
-  : '<div style="padding:0 16px 8px"><div class="info-box">\u{1F4A1} Configure seu budget na aba <strong>\u{1F3AF} Budget</strong> para ver o quanto ainda pode gastar.</div></div>');
+    (totalBudget>0
+      ? '<div class="budget-bar-wrap"><div class="budget-bar-card">' +
+          '<div class="budget-bar-header"><span class="budget-bar-label">Budget Total</span>' +
+          '<span class="budget-bar-pct" style="color:var(--' + (fillClass==='ok'?'green':fillClass==='warn'?'orange':'red') + ')">' + pctReal.toFixed(0) + '%</span></div>' +
+          '<div class="budget-bg"><div class="budget-fill ' + fillClass + '" style="width:' + pct + '%"></div></div>' +
+          '<div class="budget-sub"><span>' + fmt(totalGasto) + ' gasto</span>' +
+          '<span style="color:' + (remaining<0?'var(--red)':'var(--green)') + ';font-weight:600">' + (remaining<0?'\u2212':'') + fmt(Math.abs(remaining)) + ' ' + (remaining<0?'acima':'restante') + '</span></div>' +
+        '</div></div>'
+      : '<div style="padding:0 16px 8px"><div class="info-box">\u{1F4A1} Configure seu budget na aba <strong>\u{1F3AF} Budget</strong> para ver o quanto ainda pode gastar.</div></div>');
 }
 
 function renderCategories() {
@@ -511,7 +557,7 @@ function renderTransactions(filter='') {
           '</div>' +
           '<div class="tx-right">' +
             '<div class="tx-valor" style="color:' + (isIncome?'var(--green)':'var(--dark)') + '">' + (isIncome?'+':'') + fmt(vr) + '</div>' +
-            (parseInt(t.parcelas)>1?'<div class="tx-parcelas">'+(t.parcelaAtual||1)+'/'+t.parcelas+'</div>':'') +
+            (parseInt(t.parcelas)>1 && t.parcelaAtual!=null?'<div class="tx-parcelas">'+t.parcelaAtual+'/'+t.parcelas+'</div>':'') +
           '</div>' +
         '</div>' +
       '</div>';
@@ -530,12 +576,12 @@ function renderBudgetConfig() {
   GRUPOS.forEach(g => { const el=document.getElementById('bci-'+g.id); if(el) el.value=b[g.id]||''; });
 }
 
-window.saveBudgetConfig = () => {
+window.saveBudgetConfig = async () => {
   const b = {};
   const total = document.getElementById('budget-total-input').value;
   if (total) b.total = parseFloat(total);
   GRUPOS.forEach(g => { const el=document.getElementById('bci-'+g.id); if(el&&el.value) b[g.id]=parseFloat(el.value); });
-  saveBudget(b); showToast('Budget salvo!','success');
+  await saveBudget(b); showToast('Budget salvo! ☁️ sincronizado','success');
   renderDashboard(); renderCategories();
 };
 
@@ -711,7 +757,7 @@ window.handleCSV = async file => {
       const parcelas=parseInt(cols[6].trim())||1;
       const classe=normalizeClass(cols[1]), formaPagamento=cols[2].trim(), conta=cols[3].trim(), obs=cols[4].trim();
       const mes=dt.getMonth()+1, ano=dt.getFullYear(), valorReal=Number((valor/parcelas).toFixed(2));
-      const baseDoc={data:Timestamp.fromDate(dt),classe,formaPagamento,conta,obs,valor:Number(valor),parcelas:Number(parcelas),valorReal,mes:Number(mes),ano:Number(ano),criadoEm:Timestamp.now()};
+      const baseDoc={data:Timestamp.fromDate(dt),classe,formaPagamento,conta,obs,valor:Number(valor),parcelas:Number(parcelas),parcelaAtual:1,valorReal,mes:Number(mes),ano:Number(ano),criadoEm:Timestamp.now()};
       if(INCOME_CLASSES.includes(classe)){rendaDocs.push(baseDoc);}else{gastoDocs.push(baseDoc);}
     }catch(e){errors++;}
   });
@@ -737,8 +783,26 @@ window.handleCSV = async file => {
   await loadMonth(currentYear,currentMonth);
 };
 
+window.updateParcelaPreview = () => {
+  const valor = parseFloat(document.getElementById('f-valor').value);
+  const parcelas = parseInt(document.getElementById('f-parcelas').value)||1;
+  const preview = document.getElementById('parcela-preview');
+  if (valor > 0 && parcelas > 1) {
+    const vr = Number((valor/parcelas).toFixed(2));
+    preview.textContent = parcelas + 'x de R$ ' + vr.toLocaleString('pt-BR',{minimumFractionDigits:2});
+    preview.style.display = 'block';
+  } else {
+    preview.style.display = 'none';
+  }
+};
+
 document.addEventListener('DOMContentLoaded', () => {
-  updateMonthLabel(); showPage('dashboard'); showTab('dashboard'); loadMonth(currentYear,currentMonth);
+  updateMonthLabel(); showPage('dashboard'); showTab('dashboard');
+  // Carrega budget do Firestore (sincroniza entre dispositivos)
+  loadBudgetFromFirestore().then(() => {
+    renderDashboard(); renderCategories();
+  });
+  loadMonth(currentYear,currentMonth);
   document.getElementById('gasto-form').addEventListener('submit', async e => {
     e.preventDefault();
     const btn=document.getElementById('submit-btn');
@@ -757,12 +821,20 @@ document.addEventListener('DOMContentLoaded', () => {
       const grupoId = 'grp_' + Date.now(); // ID compartilhado entre parcelas
 
       // Cria um documento por parcela no mês correto
+      // Usa dia 1 para calcular o avanço de mês sem bug do JS (ex: 31/jan + 1 = 3/mar)
       const batch = writeBatch(db);
+      const baseDay = dt.getDate();
+      const baseMonth = dt.getMonth(); // 0-indexed
+      const baseYear = dt.getFullYear();
       for(let i = 0; i < fParcelas; i++){
-        const parcDt = new Date(dt);
-        parcDt.setMonth(parcDt.getMonth() + i);
-        const parcMes = parcDt.getMonth() + 1;
-        const parcAno = parcDt.getFullYear();
+        // Calcula mês/ano da parcela sem bug de overflow de dia
+        const targetMonth = baseMonth + i;
+        const parcAno = baseYear + Math.floor(targetMonth / 12);
+        const parcMes = (targetMonth % 12) + 1; // 1-indexed
+        // Usa o dia original, mas limitado ao último dia do mês destino
+        const daysInTargetMonth = new Date(parcAno, parcMes, 0).getDate();
+        const parcDay = Math.min(baseDay, daysInTargetMonth);
+        const parcDt = new Date(parcAno, parcMes - 1, parcDay, dt.getHours(), dt.getMinutes());
         const obsParc = fParcelas > 1 ? (fObs ? fObs + ' (' + (i+1) + '/' + fParcelas + ')' : (i+1) + '/' + fParcelas) : fObs;
         const ref = doc(collection(db, colecao));
         batch.set(ref, {
@@ -786,6 +858,7 @@ document.addEventListener('DOMContentLoaded', () => {
       e.target.reset();
       document.getElementById('f-data').value=new Date().toISOString().slice(0,16);
       document.getElementById('f-parcelas').value='1';
+      document.getElementById('parcela-preview').style.display='none';
       await loadMonth(currentYear,currentMonth);
     }catch(err){showToast('Erro ao salvar','error');console.error(err);}
     btn.disabled=false; btn.textContent='Salvar Lan\u00E7amento';
@@ -826,7 +899,13 @@ document.addEventListener('DOMContentLoaded', () => {
   <div class="form-card">
     <div class="form-title">Novo Lan&#231;amento</div>
     <form id="gasto-form">
-      <div class="field"><label>Data e Hora</label><input type="datetime-local" id="f-data" required/></div>
+      <div class="field">
+        <label>Data e Hora</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="datetime-local" id="f-data" required style="flex:1"/>
+          <button type="button" onclick="document.getElementById('f-data').value=new Date().toISOString().slice(0,16)" style="padding:10px 12px;background:var(--green-muted);border:1.5px solid var(--green-pale);border-radius:var(--radius-sm);font-size:12px;color:var(--green);font-weight:600;cursor:pointer;white-space:nowrap">Hoje</button>
+        </div>
+      </div>
       <div class="field">
         <label>Categoria</label>
         <select id="f-classe" required>
@@ -862,8 +941,12 @@ document.addEventListener('DOMContentLoaded', () => {
       </div>
       <div class="field"><label>Descri&#231;&#227;o / Lugar</label><input type="text" id="f-obs" placeholder="Opcional"/></div>
       <div class="field-row">
-        <div class="field"><label>Valor (R$)</label><input type="number" id="f-valor" step="0.01" min="0" placeholder="0,00" required/></div>
-        <div class="field"><label>Parcelas</label><input type="number" id="f-parcelas" value="1" min="1" max="60"/></div>
+        <div class="field"><label>Valor (R$)</label><input type="number" id="f-valor" step="0.01" min="0" placeholder="0,00" required oninput="updateParcelaPreview()"/></div>
+        <div class="field">
+        <label>Parcelas</label>
+        <input type="number" id="f-parcelas" value="1" min="1" max="60" oninput="updateParcelaPreview()"/>
+        <div id="parcela-preview" style="font-size:11px;color:var(--green);margin-top:4px;font-weight:600;display:none"></div>
+      </div>
       </div>
       <button type="submit" class="btn-submit" id="submit-btn">Salvar Lan&#231;amento</button>
     </form>
