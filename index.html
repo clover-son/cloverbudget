@@ -511,7 +511,7 @@ function renderTransactions(filter='') {
           '</div>' +
           '<div class="tx-right">' +
             '<div class="tx-valor" style="color:' + (isIncome?'var(--green)':'var(--dark)') + '">' + (isIncome?'+':'') + fmt(vr) + '</div>' +
-            (parseInt(t.parcelas)>1?'<div class="tx-parcelas">'+t.parcelas+'x</div>':'') +
+            (parseInt(t.parcelas)>1?'<div class="tx-parcelas">'+(t.parcelaAtual||1)+'/'+t.parcelas+'</div>':'') +
           '</div>' +
         '</div>' +
       '</div>';
@@ -751,15 +751,38 @@ document.addEventListener('DOMContentLoaded', () => {
       const fValorReal=Number((fValor/fParcelas).toFixed(2));
       const fIsIncome=isIncomeCat(fClasse);
       const colecao=fIsIncome?'rendas':'gastos';
-      await addDoc(collection(db,colecao),{
-        data:Timestamp.fromDate(dt),classe:fClasse,
-        formaPagamento:document.getElementById('f-forma').value,
-        conta:document.getElementById('f-conta').value,
-        obs:document.getElementById('f-obs').value,
-        valor:fValor,parcelas:fParcelas,valorReal:fValorReal,
-        mes:dt.getMonth()+1,ano:dt.getFullYear(),criadoEm:Timestamp.now()
-      });
-      showToast('Salvo!','success');
+      const fForma=document.getElementById('f-forma').value;
+      const fConta=document.getElementById('f-conta').value;
+      const fObs=document.getElementById('f-obs').value;
+      const grupoId = 'grp_' + Date.now(); // ID compartilhado entre parcelas
+
+      // Cria um documento por parcela no mês correto
+      const batch = writeBatch(db);
+      for(let i = 0; i < fParcelas; i++){
+        const parcDt = new Date(dt);
+        parcDt.setMonth(parcDt.getMonth() + i);
+        const parcMes = parcDt.getMonth() + 1;
+        const parcAno = parcDt.getFullYear();
+        const obsParc = fParcelas > 1 ? (fObs ? fObs + ' (' + (i+1) + '/' + fParcelas + ')' : (i+1) + '/' + fParcelas) : fObs;
+        const ref = doc(collection(db, colecao));
+        batch.set(ref, {
+          data: Timestamp.fromDate(parcDt),
+          classe: fClasse,
+          formaPagamento: fForma,
+          conta: fConta,
+          obs: obsParc,
+          valor: fValor,
+          parcelas: fParcelas,
+          parcelaAtual: i + 1,
+          valorReal: fValorReal,
+          mes: parcMes,
+          ano: parcAno,
+          grupoId: grupoId,
+          criadoEm: Timestamp.now()
+        });
+      }
+      await batch.commit();
+      showToast(fParcelas > 1 ? fParcelas + ' parcelas salvas!' : 'Salvo!', 'success');
       e.target.reset();
       document.getElementById('f-data').value=new Date().toISOString().slice(0,16);
       document.getElementById('f-parcelas').value='1';
